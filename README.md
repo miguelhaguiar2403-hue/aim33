@@ -15,9 +15,9 @@
 -- Exemplo: Carro = "rbxassetid://1234567890"
 -- Vazio = usa só o tema de cores (já funciona sem imagem).
 local IMAGES = {
-    Carro  = "",
-    Azul   = "",
-    Sasuke = "",
+    Carro  = "rbxassetid://131541060904049",
+    Azul   = "rbxassetid://130295353386511",
+    Sasuke = "rbxassetid://95066816534234",
 }
 
 -- ==================== SERVIÇOS ====================
@@ -842,6 +842,27 @@ end
 MakeDraggable(OpenBtn, OpenBtn, function() SetHub(true) end)
 MinB.MouseButton1Click:Connect(function() SetHub(false) end)
 
+-- Atalho: tocar em Alt abre/minimiza o hub (o botão 🎯 continua funcionando).
+-- Só age ao soltar o Alt sozinho, então Alt+Tab e outras combinações não ativam.
+local altDown,altUsed=false,false
+local function IsAlt(k) return k==Enum.KeyCode.LeftAlt or k==Enum.KeyCode.RightAlt end
+C(UserInputService.InputBegan,function(input)
+    if input.UserInputType~=Enum.UserInputType.Keyboard then return end
+    if UserInputService:GetFocusedTextBox() then return end
+    if IsAlt(input.KeyCode) then
+        altDown=true; altUsed=false
+    elseif altDown then
+        altUsed=true
+    end
+end)
+C(UserInputService.InputEnded,function(input)
+    if IsAlt(input.KeyCode) and altDown then
+        altDown=false
+        if not altUsed then SetHub(not Frame.Visible) end
+    end
+end)
+C(UserInputService.WindowFocusReleased,function() altDown=false end)
+
 -- ✕ descarrega tudo: pede um segundo toque para confirmar
 local confirmUnload=false
 CB.MouseButton1Click:Connect(function()
@@ -865,7 +886,7 @@ ApplyTheme(UI.Theme)
 task.spawn(function()
     local N=Instance.new("TextLabel",SG)
     N.Size=UDim2.new(0,440,0,40); N.Position=UDim2.new(0.5,-220,0,20)
-    N.BackgroundTransparency=0; N.Text="🎯 v10 | [E] Aimbot • 🎯 arrastável"
+    N.BackgroundTransparency=0; N.Text="🎯 v10 | [E] Aimbot • [Alt] abrir/minimizar"
     N.TextSize=15; N.Font=Enum.Font.GothamBold; N.BorderSizePixel=0; N.ZIndex=200
     N.BackgroundColor3=T.Panel; N.TextColor3=T.AccB
     Instance.new("UICorner",N).CornerRadius=UDim.new(0,8)
