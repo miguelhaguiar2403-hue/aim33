@@ -99,6 +99,66 @@ local function Reg(obj,prop,key)
     obj[prop] = T[key]
 end
 
+-- ==================== SALVAR / CARREGAR OPÇÕES ====================
+-- Salva ao fechar (✕) e ao minimizar. Vale na mesma sessão do jogo (shared)
+-- e, se o executor tiver writefile/readfile, também entre sessões (arquivo).
+local HttpService=game:GetService("HttpService")
+local SAVE_FILE="AimbotHub_v10_config.json"
+local SAVE_KEYS={
+    CFG={"Aimbot","ShowFOV","TeamCheck","WallCheck","ESPBox","ESPLine","ESPName","ESPHealth","FOV","Smooth","MaxDist","AimPart"},
+    ESPCfg={"ColorMode","LineThickness","TextSize","BoxStyle","CornerSize","ShowDistance","TeamColor","LineOrigin"},
+    UI={"Theme","ShowBG","BGAlpha"},
+}
+local SAVE_TABLES={CFG=CFG,ESPCfg=ESPCfg,UI=UI}
+
+local function SaveSettings()
+    local data={}
+    for name,keys in pairs(SAVE_KEYS) do
+        data[name]={}
+        for _,k in ipairs(keys) do data[name][k]=SAVE_TABLES[name][k] end
+    end
+    if type(shared)=="table" then shared.AimbotHubV10_Settings=data end
+    if type(writefile)=="function" then
+        pcall(function() writefile(SAVE_FILE,HttpService:JSONEncode(data)) end)
+    end
+end
+
+local function LoadSettings()
+    local data=(type(shared)=="table") and shared.AimbotHubV10_Settings or nil
+    if not data and type(readfile)=="function" and type(isfile)=="function" then
+        local ok,res=pcall(function()
+            if isfile(SAVE_FILE) then return HttpService:JSONDecode(readfile(SAVE_FILE)) end
+        end)
+        if ok then data=res end
+    end
+    if type(data)~="table" then return end
+    for name,keys in pairs(SAVE_KEYS) do
+        local src=data[name]
+        if type(src)=="table" then
+            for _,k in ipairs(keys) do
+                local v=src[k]
+                if v~=nil and type(v)==type(SAVE_TABLES[name][k]) then
+                    SAVE_TABLES[name][k]=v
+                end
+            end
+        end
+    end
+    -- valida valores (arquivo antigo/editado não quebra o hub)
+    if not Themes[UI.Theme] then UI.Theme="Sasuke" end
+    UI.BGAlpha=math.clamp(UI.BGAlpha,0.45,0.9)
+    if not ColorPresets[ESPCfg.ColorMode] and ESPCfg.ColorMode~="Rainbow" then ESPCfg.ColorMode="Roxo" end
+    if ESPCfg.BoxStyle~="Caixa" and ESPCfg.BoxStyle~="Cantos" then ESPCfg.BoxStyle="Caixa" end
+    if not table.find({"Baixo","Meio","Topo"},ESPCfg.LineOrigin) then ESPCfg.LineOrigin="Baixo" end
+    if not table.find({"Head","HumanoidRootPart","UpperTorso"},CFG.AimPart) then CFG.AimPart="Head" end
+    CFG.FOV=math.clamp(CFG.FOV,100,600)
+    CFG.Smooth=math.clamp(CFG.Smooth,0.05,1)
+    CFG.MaxDist=math.clamp(CFG.MaxDist,500,5000)
+    ESPCfg.LineThickness=math.clamp(ESPCfg.LineThickness,0.5,5)
+    ESPCfg.TextSize=math.clamp(ESPCfg.TextSize,9,24)
+    ESPCfg.CornerSize=math.clamp(ESPCfg.CornerSize,4,20)
+end
+LoadSettings()
+
 -- ==================== ESTADO / CONEXÕES ====================
 local aiming = false
 local Conns = {}
@@ -409,10 +469,10 @@ MakeBtn("🎯 FOV: "..CFG.FOV,nil,function(b)
     CFG.FOV=CFG.FOV+50; if CFG.FOV>600 then CFG.FOV=100 end
     b.Text="  🎯 FOV: "..CFG.FOV
 end)
-MakeBtn("💧 Smooth: "..string.format("%.2f",CFG.Smooth),nil,function(b)
+MakeBtn("💧 Smooth (troca de alvo): "..string.format("%.2f",CFG.Smooth),nil,function(b)
     CFG.Smooth=CFG.Smooth+0.05
     if CFG.Smooth>1.0 then CFG.Smooth=0.05 end
-    b.Text="  💧 Smooth: "..string.format("%.2f",CFG.Smooth)
+    b.Text="  💧 Smooth (troca de alvo): "..string.format("%.2f",CFG.Smooth)
 end)
 MakeBtn("📏 Dist: "..CFG.MaxDist,nil,function(b)
     CFG.MaxDist=CFG.MaxDist+500; if CFG.MaxDist>5000 then CFG.MaxDist=500 end
@@ -605,7 +665,7 @@ end
 
 -- Caixa 2D baseada no corpo inteiro (não depende de HumanoidRootPart/Head
 -- e continua aparecendo com o player parcialmente fora da tela)
-local function GetBox2D(c)
+local function GetBoxBBox(c)
     local ok,cf,ext=pcall(function() return c:GetBoundingBox() end)
     if not ok or not cf then return nil end
     local center=cf.Position
@@ -626,6 +686,34 @@ local function GetBox2D(c)
     end
     if not any then return nil end
     return minX,minY,math.max(maxX-minX,4),math.max(maxY-minY,6),center
+end
+
+-- Caixa centralizada no alvo: vai do topo da cabeça até os pés e fica
+-- centrada no corpo (acessórios e ferramentas não deslocam mais a caixa).
+local function GetBox2D(c)
+    local hrp=c:FindFirstChild("HumanoidRootPart") or c.PrimaryPart
+    local head=c:FindFirstChild("Head")
+    if not (hrp and head and head:IsA("BasePart") and hrp:IsA("BasePart")) then
+        return GetBoxBBox(c)
+    end
+    local hum=c:FindFirstChildOfClass("Humanoid")
+    local feetOff
+    if hum and hum.RigType==Enum.HumanoidRigType.R6 then
+        feetOff=hrp.Size.Y*1.5
+    else
+        feetOff=((hum and hum.HipHeight) or 2)+hrp.Size.Y/2
+    end
+    local topW=head.Position+Vector3.new(0,head.Size.Y/2+0.1,0)
+    local botW=hrp.Position-Vector3.new(0,feetOff,0)
+    local tp=Camera:WorldToViewportPoint(topW)
+    local bp=Camera:WorldToViewportPoint(botW)
+    local mp=Camera:WorldToViewportPoint(hrp.Position)
+    if tp.Z<=0 or bp.Z<=0 or mp.Z<=0 then return nil end
+    local bh=math.max(math.abs(bp.Y-tp.Y),6)
+    local bw=math.max(bh*0.55,4)
+    local by=math.min(tp.Y,bp.Y)
+    local bx=mp.X-bw/2
+    return bx,by,bw,bh,(topW+botW)/2
 end
 
 local function HideESP(d)
@@ -771,14 +859,53 @@ local function PickTarget()
 end
 
 local lastLook=nil
-local SNAP=math.rad(4) -- perto do alvo, a mira gruda 100%
+local SNAP=math.rad(4)   -- perto do alvo, a mira gruda 100%
+local APPROACH=0.75      -- velocidade fixa pra chegar no alvo
+local userOffset=Vector2.new(0,0) -- "força" do mouse acumulada enquanto travado
+
+-- acumula o movimento do mouse enquanto o aimbot está segurando um alvo
+C(UserInputService.InputChanged,function(input)
+    if input.UserInputType==Enum.UserInputType.MouseMovement and CFG.Aimbot and aiming then
+        userOffset=userOffset+Vector2.new(input.Delta.X,input.Delta.Y)
+    end
+end)
+
+-- Próximo alvo: o player mais perto de onde o jogador "virou" a mira
+local function PickInDirection(offset,exclude)
+    if offset.Magnitude<1 then return nil end
+    local u=offset.Unit
+    local ctr=Camera.ViewportSize/2
+    local virt=ctr+offset                       -- pra onde a mira foi virada
+    local maxD=math.max(CFG.FOV,offset.Magnitude)
+    local bestPlr,bestPart,bestD=nil,nil,math.huge
+    for _,plr in pairs(Players:GetPlayers()) do
+        if plr~=exclude and ValidTarget(plr) then
+            local p=plr.Character[CFG.AimPart]
+            if (p.Position-Camera.CFrame.Position).Magnitude<=CFG.MaxDist then
+                local sp,on=Camera:WorldToViewportPoint(p.Position)
+                if on then
+                    local pt=Vector2.new(sp.X,sp.Y)
+                    local off=pt-ctr
+                    -- precisa estar do lado pra onde o mouse foi empurrado
+                    if off.Magnitude>0.5 and off.Unit:Dot(u)>0.3 then
+                        local d=(pt-virt).Magnitude
+                        if d<=maxD and d<bestD and IsVisible(p) then
+                            bestD=d; bestPlr=plr; bestPart=p
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return bestPlr,bestPart
+end
 
 -- Prioridade "Last": roda depois de câmera, personagens e animações,
 -- então a mira usa a posição final do alvo no frame (sem atraso).
-RunService:BindToRenderStep("PurpleAimbot", Enum.RenderPriority.Last.Value, function()
+RunService:BindToRenderStep("PurpleAimbot", Enum.RenderPriority.Last.Value, function(dt)
     Camera=Workspace.CurrentCamera or Camera
     if not CFG.Aimbot or not aiming then
-        lockedPlr=nil; lastLook=nil
+        lockedPlr=nil; lastLook=nil; userOffset=Vector2.new(0,0)
         return
     end
 
@@ -791,8 +918,18 @@ RunService:BindToRenderStep("PurpleAimbot", Enum.RenderPriority.Last.Value, func
         end
     end
 
-    -- senão escolhe o mais perto do centro da tela
-    if not part then
+    if part then
+        -- SMOOTH = força necessária pra sair do alvo atual e ir pro próximo:
+        -- precisa empurrar o mouse com mais força (Smooth maior = mais "preso")
+        userOffset=userOffset*(0.95^(math.max(dt,0.001)*60))
+        local need=math.max(15,CFG.Smooth*400)
+        if userOffset.Magnitude>=need then
+            local altPlr,altPart=PickInDirection(userOffset,lockedPlr)
+            userOffset=Vector2.new(0,0)
+            if altPlr then lockedPlr=altPlr; part=altPart end
+        end
+    else
+        userOffset=Vector2.new(0,0)
         lockedPlr,part=PickTarget()
     end
     if not part then lastLook=nil; return end
@@ -802,12 +939,10 @@ RunService:BindToRenderStep("PurpleAimbot", Enum.RenderPriority.Last.Value, func
     if to.Magnitude<0.01 then return end
     local want=to.Unit
 
-    -- A mira parte da última direção usada (não da câmera do jogo) e
-    -- converge pro alvo: o Smooth controla a velocidade de chegada e, ao
-    -- chegar perto, gruda 100% e acompanha o alvo sem ficar pra trás.
+    -- converge pro alvo e, ao chegar perto, gruda 100% e acompanha sem atraso
     local cur=lastLook or Camera.CFrame.LookVector
     local ang=math.acos(math.clamp(cur:Dot(want),-1,1))
-    local alpha=(ang<=SNAP) and 1 or math.clamp(1-CFG.Smooth,0.05,1)
+    local alpha=(ang<=SNAP) and 1 or APPROACH
     local nl=cur:Lerp(want,alpha)
     if nl.Magnitude<0.001 then nl=want else nl=nl.Unit end
     lastLook=nl
@@ -816,6 +951,7 @@ end)
 
 -- ==================== DESCARREGAR ====================
 local function Unload()
+    SaveSettings() -- guarda as opções antes de fechar
     CFG.Aimbot=false; aiming=false
     pcall(function() RunService:UnbindFromRenderStep("PurpleAimbot") end)
     for _,c in ipairs(Conns) do pcall(function() c:Disconnect() end) end
@@ -834,6 +970,7 @@ MakeDraggable(TB, Frame)
 -- Botão minimizado: arrasta; toque rápido abre/fecha
 -- Hub aberto = botão 🎯 escondido (evita clicar nele sem querer por cima da janela)
 local function SetHub(open)
+    if not open then SaveSettings() end
     Frame.Visible=open
     OpenBtn.Visible=not open
     if open then EnsureOnScreen(Frame) end
